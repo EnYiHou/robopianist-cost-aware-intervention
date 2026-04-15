@@ -1,13 +1,5 @@
 # RoboPianist Cost-Aware Intervention
 
-Minimal research repo for the curated RoboPianist teacher-intervention pipeline.
-
-The repo keeps one reproducible path only:
-- build the curated HLPE dataset from the final checkpoints
-- train the retained direct intervention models
-- compare them against `delta_q`
-- write a short summary with the headline cost-adjusted result
-
 ## Research paper
 
 - Paper PDF: [report.pdf](./report.pdf)
@@ -47,17 +39,12 @@ The checkpoints are not tracked in Git. The pipeline expects these local files:
 
 ## How to run
 
-Run the full curated pipeline:
+Run the pipeline:
 
 ```bash
 python run_curated_pipeline.py --output-root results/curated_pipeline --overwrite
 ```
 
-Run a smaller verification pass:
-
-```bash
-python run_curated_pipeline.py --output-root results/curated_pipeline --anchor-count 4 --epochs 5 --batch-size 64 --overwrite
-```
 
 ## Pipeline steps
 
@@ -66,17 +53,3 @@ python run_curated_pipeline.py --output-root results/curated_pipeline --anchor-c
 3. `compare_methods.py` evaluates those models against `delta_q`, `action_l2_distance`, and `mistake_magnitude`.
 4. `run_curated_pipeline.py` writes the final markdown summary under `results/.../summary/summary.md`.
 
-If you want to rebuild the paper PDF after editing the LaTeX source:
-
-```bash
-tectonic report.tex
-```
-
-## Outputs
-
-The pipeline writes:
-
-- `results/curated_pipeline/dataset`
-- `results/curated_pipeline/models`
-- `results/curated_pipeline/comparison`
-- `results/curated_pipeline/summary/summary.md`
