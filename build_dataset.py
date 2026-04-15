@@ -19,11 +19,11 @@ RL_ROOT = PROJECT_ROOT / "robopianist-rl"
 if str(RL_ROOT) not in sys.path:
     sys.path.insert(0, str(RL_ROOT))
 
-import sac  # type: ignore  # noqa: E402
-import specs  # type: ignore  # noqa: E402
-from robopianist import suite  # type: ignore  # noqa: E402
-import dm_env_wrappers as wrappers  # type: ignore  # noqa: E402
-import robopianist.wrappers as robopianist_wrappers  # type: ignore  # noqa: E402
+import sac
+import specs
+from robopianist import suite
+import dm_env_wrappers as wrappers
+import robopianist.wrappers as robopianist_wrappers
 
 ROWS_FILENAME = "rows.csv"
 METADATA_FILENAME = "metadata.json"
@@ -168,6 +168,8 @@ def get_env(args: Args, record_dir: Optional[Path] = None):
 
 
 def stable_seed(*parts: Any) -> int:
+    # We keep split assignment and candidate generation stable by hashing labels
+    # instead of depending on filesystem ordering.
     text = "|".join(str(part) for part in parts)
     digest = hashlib.sha256(text.encode("utf-8")).digest()
     return int.from_bytes(digest[:8], "little", signed=False)
@@ -241,6 +243,7 @@ def pad_rewards(rewards: list[float], horizon: int = 20) -> np.ndarray:
 
 
 def assign_split(anchor_id: str, val_fraction: float = 0.15, test_fraction: float = 0.15) -> str:
+    # Split by anchor id so all candidate variants from the same anchor stay together.
     digest = hashlib.sha256(anchor_id.encode("utf-8")).hexdigest()
     bucket = int(digest[:8], 16) / 0xFFFFFFFF
     if bucket < test_fraction:
@@ -356,6 +359,7 @@ def rollout_branch_from_anchor(
     anchor_timestep: int,
     first_action_sequence: np.ndarray,
 ) -> np.ndarray:
+    # Both branches return to expert continuation after the local burst.
     replay_to_anchor(env, expert_actions, anchor_timestep)
     rewards: list[float] = []
     timestep = None
@@ -412,6 +416,8 @@ def generate_curated_candidates(
             template_seed = int(rng.integers(0, np.iinfo(np.uint32).max))
 
             if subfamily == "hlp_short_burst_noise":
+                # Reuse one direction and add a bit of jitter so the burst feels structured,
+                # not just like independent white noise every step.
                 base_rng = np.random.default_rng(template_seed)
                 base_direction = normalize_direction(base_rng.normal(0.0, 1.0, size=action_shape).astype(np.float32))
                 for step_index in range(burst_length):
@@ -519,6 +525,7 @@ def check_dataset(rows: pd.DataFrame, corrected_rewards: np.ndarray, uncorrected
     if (leaking > 1).any():
         raise ValueError("anchor leakage across splits")
     for row_index in range(len(rows)):
+        # Recompute the supervision labels from the stored traces and fail early if they drift.
         labels = compute_branch_labels(corrected_rewards[row_index], uncorrected_rewards[row_index])
         for key in ["corrected_return_5", "uncorrected_return_5", "harm_5", "corrected_return_20", "uncorrected_return_20", "intervention_value_20"]:
             if not np.isclose(float(rows.iloc[row_index][key]), float(labels[key]), atol=1e-5):
@@ -602,6 +609,7 @@ def build_dataset(checkpoints: list[dict[str, str]], output_dir: Path, anchor_co
         )
 
         for anchor_timestep in anchors:
+            # One anchor state becomes many local intervention questions through the HLPE family.
             anchor_index = anchor_timestep - 1
             observation = np.asarray(expert_trace["observations"][anchor_index], dtype=np.float32)
             expert_action = np.asarray(expert_trace["expert_actions"][anchor_index], dtype=np.float32)

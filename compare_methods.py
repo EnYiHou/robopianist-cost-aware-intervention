@@ -34,6 +34,8 @@ def compare_methods(dataset_dir: Path, model_paths: list[Path], output_dir: Path
         method_scores[label] = prediction_df["pred_intervention_score"].to_numpy(dtype="float32")
         learned_tables.append(prediction_df)
 
+    # We keep the evaluation focused on the reported operating mode:
+    # budgeted selection plus cost-adjusted net return.
     budget_summary = evaluate_budget_methods(test_rows, method_scores, BUDGETS)
     cost_summary = build_cost_summary(budget_summary, INTERVENTION_COSTS)
     best_overall = best_rows_by_cost(cost_summary)

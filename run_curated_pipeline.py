@@ -91,6 +91,7 @@ def run_pipeline(output_root: Path, anchor_count: int = 16, seed: int = 0, epoch
     compare_dir = output_root / "comparison"
     summary_dir = output_root / "summary"
 
+    # The whole repo is intentionally centered around this one path.
     build_dataset(
         checkpoints=CURATED_CHECKPOINTS,
         output_dir=dataset_dir,

@@ -45,7 +45,9 @@ class Buffer:
         self._latest = timestep
 
         if action is not None:
-            self._states[self._ptr] = self._prev.observation  # type: ignore
+            if self._prev is None:
+                raise ValueError("Previous timestep is missing for replay insertion.")
+            self._states[self._ptr] = self._prev.observation
             self._actions[self._ptr] = action
             self._next_states[self._ptr] = self._latest.observation
             self._rewards[self._ptr] = self._latest.reward

@@ -1,0 +1,491 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\setlist[itemize]{leftmargin=1.5em}
+\setlist[enumerate]{leftmargin=1.7em}
+\setlength{\emergencystretch}{3em}
+\title{From Local Harmfulness to Cost-Aware Teacher-Side Intervention in RoboPianist}
+\author{EnYi Hou \\ McGill University \\ COMP400}
+\date{April 2026}
+\begin{document}
+\maketitle
+
+\section{Abstract}
+
+This paper examines teacher-side corrective intervention in RoboPianist. The starting point for the research was a more narrow result: a frozen expert SAC critic can provide a high-quality local harmfulness score, namely, the expert-relative critic gap \(\Delta Q_t\), which is stored as \texttt{delta\_q} in code and outperforms perturbation size-based baselines in local perturbation experiments. In this study, we retain the underlying idea and formulate a more decision-oriented hypothesis: at what points should the teacher choose to intervene, rather than allow an error to occur and potentially be recovered from? To address that question, we propose a new paired-branch benchmark, which measures the quality of interventions by comparing the immediate correction of an error with letting the candidate commit the mistake and keep playing under the same expert policy. The benchmark produces labels for short-term harm, self-recoverability, and intervention value. After that, we compare baselines from Method 1, which rely on \(\Delta Q_t\), action-space distance, and perturbation size, against learned Method 2 models. The strongest model is \texttt{direct\_with\_delta\_q}, which is a direct intervention-value predictor and incorporates \(\Delta Q_t\) as a feature. The improvement of the model over the baseline is not high since the experiment involves a relatively short horizon of 20 steps. However, the performance gain remains stable across the cost-adjusted \texttt{mean\_net\_return} metric.
+
+\section{Introduction}
+
+Not every imperfection should necessarily be corrected by a good teacher. On the one hand, there are obvious mistakes that should be corrected immediately. But on the other hand, many deviations will disrupt performance just momentarily, and the system might restore itself later. Once there is a cost associated with the correction, the former two situations should clearly be handled differently. In this paper, the goal is to understand how that decision can be made. That is, the core question is rather simple, but not trivial.
+
+This work uses a reinforcement learning framework and the RoboPianist setup \cite{zakka2023robopianist}. Reinforcement learning is concerned with observing a state, making an action, collecting reward, and relying on a policy, which is essentially a strategy for making decisions in future states. State-action value, or Q-value, \(Q(s, a)\), measures the expected future reward after applying action \(a\) to state \(s\) and then continuing the process using the policy further. Here, the policy is defined using SAC expert checkpoints \cite{haarnoja2018sac}, with expert actions and critic evaluations included as well.
+
+The preliminary Delta-Q study involved using the expert critic to compare the difference between the expert action \(a_t^\ast\) and another candidate action \(\tilde{a}_t\) in the context of the observed state. Specifically, the critic-gap local score was estimated as
+\[
+\Delta Q_t = \min(Q_1, Q_2)(s_t, a_t^\ast) - \min(Q_1, Q_2)(s_t, \tilde{a}_t).
+\]
+Here \(Q_1\) and \(Q_2\) are the two SAC critics, and the minimum is used to obtain a conservative value estimate.
+
+Positive \(\Delta Q_t\) indicates that the expert action is preferred by the critic in this particular state. Previous research raised an interesting question concerning the ability of that measurement to predict eventual damage better than some simple baselines like the size of deviation. This paper keeps the core elements, but asks a different and perhaps more actionable question: when does the teacher need to intervene?
+
+Methods being compared here are two groups of interventions. In the first approach, a set of predefined and hand-tuned local signals is used: the critic-gap score \(\Delta Q_t\), action L2 distance, and perturbation magnitude. In the second approach, paired-branch data is used to learn an intervention rule. For evaluating the results, cost-adjusted \texttt{mean\_net\_return} is used as the key metric. When the intervention cost is zero, intervening always is the zero-cost upper bound, as unnecessary corrections do not matter anymore. But when positive intervention cost is introduced, things become much harder, and the teacher needs to decide when and where to intervene.
+
+Contributions of this paper can be summarized as follows. Firstly, we reformulate the Delta-Q harmfulness question studied in the preliminary Delta-Q study into an intervention problem that explicitly accounts for intervention costs. Secondly, we propose a paired-branch evaluation scheme taking short-term harm, self-recovery capacity, and benefit from intervention into account. Thirdly, we compare strong local hand-crafted signals against learned intervention models under factorized and direct settings. Finally, we find that among all learned intervention variants, \texttt{direct\_with\_delta\_q} beats the plain critic-gap baseline in terms of cost-adjusted \texttt{mean\_net\_return} on the synthesized Human-Like Proxy Error (HLPE) benchmark when intervention cost is positive.
+
+The conclusion drawn from these data is rather specific. It is not a paper about human teaching, nor is it an online student-adaptation study. And most certainly, it is not a general claim about learned intervention models being superior to critic-based signals. Instead, this is a benchmarking paper relying on carefully chosen HLPE data. The contribution here is in showing that although critic gap is a great local signal, the combination of critic gap and other signals works better in learned intervention models on the selected HLPE benchmark.
+
+\section{Problem Framing and Terminology}
+
+This work concerns teacher-side corrective intervention. Specifically, a student takes an initial action, a teacher observes that action, and the teacher decides whether to replace that action with the expert action. Consequently, the object of this paper is a local decision about intervention, rather than a broad theory of teaching. Below are definitions of some common terminologies used in this paper:
+
+\subsection*{Local Harmfulness}
+
+The measure of local harmfulness is how much immediate damage is done by letting the current candidate action go unchecked. The label \texttt{harm\_5} corresponds directly to this concern, being the difference between corrected and uncorrected rewards within five steps into the future in this benchmark study.
+
+\subsection*{Self-Recoverability}
+
+The self-recoverability of an uncorrected state measures whether the uncorrected branch can recover quickly enough without intervention. Self-recoverability is assessed in this paper through rolling 5-step reward windows in the 20 steps immediately following observation of the action. The measure of recoverability considered here is relevant to intervention decisions, but does not represent the claim that only two factors always matter in teaching situations.
+
+\subsection*{Intervention Value}
+
+Intervention value represents the reward benefit gained by intervening in the student trajectory at that point in time instead of abstaining. \texttt{intervention\_value\_20} measures exactly this, taking as input the difference between corrected 20-step and uncorrected 20-step returns for an intervention at a certain point in time, where this point defines a decision boundary between intervention and no intervention.
+
+\subsection*{Shared Autonomy and Corrective Assistance}
+
+The term shared autonomy generally denotes continual co-control between a human and an aiding controller \cite{reddy2018shared,schaff2020residual}. The term corrective assistance is used to describe more varied forms of assistance, including overriding control or local intervention. Shared autonomy does not describe our setting, as the teacher does not blend actions with the student. The problem is instead whether the teacher should intervene or not.
+
+\subsection*{Learner-Side Help-Seeking}
+
+Some related works examine whether a controlled system should seek help based on its own observations \cite{singh2022ask4help,ren2023robots}. This is not the focus of the present work, since the student does not seek out any form of aid and the teacher makes an intervention versus non-intervention decision after observation of the candidate action.
+
+\subsection*{Position of This Paper}
+
+This paper takes up a specific topic: a benchmark for local teacher-side correction in a RoboPianist setting built upon a critic-based algorithmic baseline and explicitly considering intervention cost.
+
+\subsection*{Related-Work Context}
+
+ Relative to the preliminary Delta-Q study, the present paper changes the question from local action scoring to local intervention. Relative to shared-autonomy or corrective-assistance work, the present benchmark does not study continuous action blending with a human. Relative to learner-side help-seeking, the student does not ask for help at all. The teacher sees a deviation and decides whether correction is worth paying for.
+
+\section{From the Preliminary Delta-Q Study to Teacher-Side Intervention}
+
+This project asked if a frozen expert critic was able to measure the local action quality better than simple baselines representing the perturbation size. At observation \(s_t\), expert action \(a_t^\ast\) and proposed action \(\tilde{a}_t\) were considered. As mentioned previously, their critic-gap score was defined as
+\[
+\Delta Q_t = \min(Q_1, Q_2)(s_t, a_t^\ast) - \min(Q_1, Q_2)(s_t, \tilde{a}_t),
+\]
+
+which was a critic-gap score in the sense of the two-headed SAC implementation.
+
+In the preliminary Delta-Q study, there were also two simple baselines: the action L2 distance between the original and proposed actions,
+
+\[
+d_{\mathrm{L2},t} = \lVert \tilde{a}_t - a_t^\ast \rVert_2.
+\]
+
+and perturbation magnitude, understood as the scaling coefficient used to produce the perturbation. For Gaussian data, perturbation magnitude is equal to the base noise standard deviation multiplied by the severity parameter of the perturbation. For matched-L2 data, it is equal to the requested perturbation norm. For HLPE data, it is equal to the requested structured-error scale. 
+
+The original one-step experiment showed that \(\Delta Q_t\) demonstrated the best correlation with downstream reward drop and the largest \(R^2\) among the three local variables tested. Therefore, Method 1 starts already as a decent baseline.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.28\linewidth}>{\raggedright\arraybackslash}p{0.16\linewidth}>{\raggedright\arraybackslash}p{0.18\linewidth}>{\raggedright\arraybackslash}p{0.20\linewidth}}
+\toprule
+Signal & Pearson r & Spearman rho & Single-feature \(R^2\) \\
+\midrule
+\(\Delta Q_t\) & \texttt{0.524} & \texttt{0.766} & \texttt{0.275} \\
+Perturbation magnitude & \texttt{0.410} & \texttt{0.607} & \texttt{0.168} \\
+Action L2 distance & \texttt{0.389} & \texttt{0.606} & \texttt{0.151} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+It was checked whether \(\Delta Q_t\) could be viewed as yet another representation of perturbation size. For this purpose, the same templates of perturbations were applied several times while keeping the magnitude fixed. If \(\Delta Q_t\) would depend solely on perturbation size, then it should not have varied noticeably under that control. However, this metric still showed variation across timesteps and maintained predictive significance. Put differently, the critic-gap score takes the context into account and not only to perturbation magnitude.
+
+Additionally, horizon analysis showed that \(\Delta Q_t\) was mostly significant as a short-horizon damage indicator. This makes it an ideal candidate for a benchmark of local harmfulness. At the same time, the preliminary Delta-Q study also showed the limitation of purely local harmfulness. Indeed, for the teacher, it is equally important to assess not only the current harmfulness of the action, but also the chance of recovery if no intervention happens. Thus, this benchmark focuses on two other factors that are crucial for local decisions: damage level and chance of recovery.
+
+The methodological path through the paper can be briefly described as follows. We first considered a factorized Method 2 model as being closer to the concept: in order to intervene, both the level of damage and the likelihood of recovery must be known. Afterward, we included a direct intervention-value model, which directly predicts the decision quantity. As can be seen from the experimental results, the direct model was better operationally, especially \texttt{direct\_with\_delta\_q}, whereas the factorized one was helpful interpretatively.
+
+\section{Benchmark and Dataset Pipeline}
+
+\subsection*{Dataset Objective}
+
+The objective of the dataset is to turn potential interventions at each local point into supervised instances that can be used to fairly evaluate hand-crafted and learned intervention policies. Each instance starts from the same anchor state and records outcomes from two branches: intervene now, or do not intervene now.
+
+\subsection*{Pipeline}
+
+The benchmark has the following pipeline for all examples:
+
+\begin{itemize}
+\item Run an expert checkpoint of a trained model in RoboPianist and get the expert trace.
+\item Select an anchor step from that trace.
+\item Generate an instance-specific candidate error at that anchor.
+\item Branch off from the same anchor step to an intervene-now trace and a no-intervention trace.
+\item Save the corresponding reward traces and generate the labels.
+\item Train and evaluate intervention policies on that data.
+\end{itemize}
+
+By replaying to the same anchor state, the pipeline makes sure that we measure only the local consequences of the current mistake while leaving the continuation policy unchanged. Thus, the benchmark is specifically not an online student-learning scenario, not a teacher-student co-training system, and not a human-data benchmark.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.96\linewidth]{figures/benchmark_schematic.png}
+\caption{Benchmark schematic. Expert replay provides anchor states, a candidate burst defines the no-intervention branch, the intervene-now branch executes the expert burst, and both branches continue with the same expert policy. Stored reward traces yield local labels, while Method 1 and Method 2 policies decide whether intervening is worth the cost.}
+\end{figure}
+
+\subsection*{Labels}
+
+The benchmark stores aligned reward traces of 20 steps for both branches and calculates three key labels. Short-term harm is
+\[
+\text{harm}_5 = \sum_{i=1}^{5} r^{\mathrm{corr}}_{t+i} - \sum_{i=1}^{5} r^{\mathrm{uncorr}}_{t+i},
+\]
+
+measuring the local impact of the current mistake. Recoverability is a binary label, \texttt{recoverable\_20}, measuring whether the uncorrected trace comes close to the local performance of the corrected trace within 20 steps. Recovery is counted in the production benchmark if there exists at least one rolling 5-step period in which the reward in the uncorrected branch matches the corrected branch at the threshold of \texttt{1.0}, in which case \texttt{time\_to\_recovery\_20} is the first step where it happens. Value of intervention is
+\[
+\text{intervention\_value}_{20} = \sum_{i=1}^{20} r^{\mathrm{corr}}_{t+i} - \sum_{i=1}^{20} r^{\mathrm{uncorr}}_{t+i},
+\]
+
+calculating the value of the intervention in terms of cumulative 20-step reward gain. Cost of intervention is not considered in the label itself, but is added later when evaluating policies in the benchmark.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.96\linewidth]{figures/label_construction.png}
+\caption{Label construction from aligned reward traces. The shaded first five steps define \texttt{harm\_5}, the 20-step endpoint defines \texttt{intervention\_value\_20}, and recoverability is marked when the uncorrected branch regains near-corrected local performance within the horizon.}
+\end{figure}
+
+\subsection*{Why Both Branches Should Have Expert Continuation}
+
+After a single step or burst of actions, both branches go back to expert continuation. For burst types, this means that the intervene-now branch takes the expert burst followed by expert policy, while the no-intervention branch takes the corrupted burst, after which it follows the expert policy. This makes the resulting dataset simpler to analyze. The idea is to estimate local benefit in correction while the continuation policy remains constant. That is also why the reward differences remain relatively low between branches: both are set back to expert policy after local deviation.
+
+\subsection*{Human-Like Proxy Errors}
+
+The headline benchmark uses structured perturbations categorized as Human-Like Proxy Errors, or HLPE. These errors are intended to be more human-like proxies than the standard one-step Gaussian noise. However, HLPEs are not supposed to be realistic human motor models, but an attempted approximation of human errors. 
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.20\linewidth}>{\raggedright\arraybackslash}p{0.12\linewidth}>{\raggedright\arraybackslash}p{0.28\linewidth}>{\raggedright\arraybackslash}p{0.28\linewidth}}
+\toprule
+Family & Share & Construction & Example interpretation \\
+\midrule
+Lagged action error & \texttt{34.375\%} & The candidate action partly repeats the previous action for several steps instead of matching the current expert action. & A delayed finger movement that stays behind the intended timing. \\
+Persistent sparse bias & \texttt{31.250\%} & The same signed offset is applied to a few action dimensions for several consecutive steps. & A short period of consistent overshoot caused by temporary tension or posture bias. \\
+Sparse sign template & \texttt{25.000\%} & A fixed signed push is applied to a small subset of action dimensions for one or two steps. & A repeated local coordination slip in part of the hand. \\
+Short burst noise & \texttt{9.375\%} & Temporally correlated noise is added over a short burst. & A brief stumble or transient loss of control. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Methods}
+
+\subsection*{Method 1: Local Trigger Baselines}
+
+Method 1 associates a single local signal with each intervention opportunity and then makes an intervention or non-intervention decision based on that score. The three Method 1 signals are \(\Delta Q_t\), the action L2 distance, and perturbation magnitude. In code and saved artifacts, the first of these is still named \texttt{delta\_q}. Crucially, all three are local measures even when the candidate error spans several timesteps. The reason for this is to explore whether a single score is sufficient, or if the learned model benefits from a richer representation of recoverability and context in this case.
+
+\subsection*{Method 2: Learned Intervention Models}
+
+The evaluation explores two families of learned shared-MLP models. In the factorized model, the learner predicts \texttt{harm\_5} and \texttt{recoverable\_20} separately and combines the predictions to produce the decision score
+\[
+\text{factorized score} = \widehat{\text{harm}}_5 \left(1 - \hat{p}(\text{recoverable}_{20})\right).
+\]
+
+In words, the factorized model assigns high scores where the predicted harm is high and the predicted recoverability is low. By contrast, the direct model predicts \texttt{intervention\_value\_20} directly. \texttt{intervention\_value\_20} is a closer match to the target of the overall algorithm since the decision relies on intervention value relative to intervention cost. Both families of models are evaluated both with and without \texttt{delta\_q} as a feature, generating \texttt{factorized\_no\_delta\_q}, \texttt{factorized\_with\_delta\_q}, \texttt{direct\_no\_delta\_q}, and \texttt{direct\_with\_delta\_q} policies.
+
+\subsection*{Model Inputs and Architecture}
+
+Both families of models rely on a shared MLP backbone. The feature representation comprises:
+
+\begin{itemize}
+\item the flattened observation at the anchor state,
+\item the expert action at the anchor state,
+\item the candidate first action,
+\item the action difference between candidate and expert action,
+\item scalar features: progress, action L2 distance, perturbation magnitude, burst length, support size, and lag alpha,
+\item one-hot task identity,
+\item one-hot candidate-family identity,
+\item one-hot HLPE subfamily identity,
+\item optionally, \texttt{delta\_q},
+\end{itemize}
+
+where support size refers to the number of action dimensions changed by a structured error and lag alpha is the weight of the previous action in the lagged-action family.
+
+The network configuration is:
+
+\begin{itemize}
+\item hidden layers: \texttt{(256, 256)},
+\item activation function: the MLP activation used in the Flax implementation,
+\item optimizer: Adam,
+\item learning rate: \texttt{3e-4},
+\item batch size: \texttt{128},
+\item number of training epochs: \texttt{50}.
+\end{itemize}
+
+\subsection*{Decision Rules}
+
+Three intervention decision rules are evaluated. Budgeted intervention selects the highest-scored fraction of rows. Threshold intervention selects rows where the computed score exceeds the specified threshold. Value-cost rule, applied only to the direct family, selects the rows where the predicted intervention value is greater than the intervention cost. Assuming intervention cost \(c\), the net return of a row is
+\[
+\text{net return} = \text{chosen 20-step return} - c \cdot \mathbf{1}[\text{intervene}],
+\]
+where \(\mathbf{1}[\cdot]\) is the indicator function, and the headline metric of interest is the mean net return across rows,
+\[
+\texttt{mean\_net\_return} = \mathbb{E}\!\left[\text{chosen return} - c \cdot \mathbf{1}[\text{intervene}]\right].
+\]
+
+For example, consider a situation where an intervention increases 20-step return by \texttt{0.4}, from \texttt{8.2} to \texttt{8.6}. If intervention cost is \texttt{0.25}, it is worthwhile on that row. If the cost is \texttt{0.5}, it is not anymore worth intervening to correct the error.
+
+\subsection*{Why \texttt{direct\_with\_delta\_q} Is the Headline Method 2 Policy}
+
+The factorized model was introduced first as a matching decomposition of the problem. However, the direct model better captures the actual decision quantity of interest, which made it the headline intervention method.
+
+\subsection*{Method Family as an Ablation Map}
+
+It also helps to say plainly what the method names are actually varying. The table below is meant as a map of the ablation family, not as a second winner table.
+
+\begin{table}[h]
+\centering
+\scriptsize
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.22\linewidth}>{\raggedright\arraybackslash}p{0.12\linewidth}>{\raggedright\arraybackslash}p{0.22\linewidth}>{\raggedright\arraybackslash}p{0.30\linewidth}}
+\toprule
+Method & Uses \texttt{delta\_q}? & Score or target & What changes \\
+\midrule
+\texttt{delta\_q} & yes & local critic-gap score & strongest handcrafted local trigger \\
+action L2 & no & executed action difference & geometric action-distance trigger \\
+perturbation magnitude & no & requested scale & generation-time size signal \\
+factorized w/o dq & no & predicted harm + recoverability & learned context without critic gap \\
+factorized with dq & yes & predicted harm + recoverability & same decomposition with critic gap added \\
+direct w/o dq & no & predicted intervention value & direct target without critic gap \\
+direct with dq & yes & predicted intervention value & direct target with critic gap \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Experimental Setup}
+
+\subsection*{Expert Checkpoints Used}
+
+The headline comparison uses five expert checkpoints. Three checkpoints are different seeds of \texttt{TwinkleTwinkleLittleStar}, and two are \texttt{TwinkleTwinkleRousseau} and \texttt{CMajorScaleTwoHands}. These checkpoints are used since they have high performance and high key-press F1 scores, which means that they are credible teachers for this benchmark. Key-press F1 reflects how much played notes agree with the target notes, thus being an easy check on whether the expert policy executes the music piece successfully or not.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.30\linewidth}>{\raggedright\arraybackslash}p{0.10\linewidth}>{\raggedright\arraybackslash}p{0.18\linewidth}>{\raggedright\arraybackslash}p{0.18\linewidth}}
+\toprule
+Piece / task & Seed & Total reward & Key-press F1 \\
+\midrule
+Twinkle Twinkle Little Star & \texttt{42} & \texttt{537.05} & \texttt{0.942} \\
+Twinkle Twinkle Little Star & \texttt{7} & \texttt{539.51} & \texttt{0.963} \\
+Twinkle Twinkle Little Star & \texttt{123} & \texttt{539.11} & \texttt{0.930} \\
+Twinkle Twinkle Rousseau & \texttt{42} & \texttt{511.82} & \texttt{0.878} \\
+C Major Scale Two Hands & \texttt{42} & \texttt{501.66} & \texttt{0.888} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{Selected HLPE Benchmark}
+
+The headline dataset uses a selected HLPE mixture on top of those five expert checkpoints. The reason for this choice is to enhance mistake variety and make perturbations closer to human-like proxies rather than one-step noise. This benchmark consists of \texttt{14,464} rows and preserves first-step local baselines while increasing variation in structured deviations that Method 2 must distinguish.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.55\linewidth}>{\raggedright\arraybackslash}p{0.25\linewidth}}
+\toprule
+Statistic & Value \\
+\midrule
+Total rows & \texttt{14,464} \\
+Train / val / test & \texttt{10,848 / 1,856 / 1,760} \\
+Positive intervention-value fraction & \texttt{0.679895} \\
+Positive harm fraction & \texttt{0.733684} \\
+Recoverable fraction & \texttt{0.867879} \\
+Lagged action share & \texttt{0.34375} \\
+Persistent sparse bias share & \texttt{0.31250} \\
+Sparse sign template share & \texttt{0.25000} \\
+Short burst noise share & \texttt{0.09375} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These statistics allow us to get a brief overview of the decision problem. Positive intervention-value ratio is the proportion of times when intervention helps over the next 20 steps. Positive harm ratio is the proportion of times when candidate action leads to temporary damage within the next 5 steps. Recoverable ratio stands for the number of times when not executing an intervention still leads to recovery toward almost corrected local performance. Taken together, these numbers show the presence of many harmful cases and many recoverable cases in this particular benchmark, which is exactly what intervention should select. Finally, subfamily shares confirm the dominating type of lagged and persistent structured mistakes in this benchmark.
+
+\subsection*{Evaluation Settings}
+
+All headline benchmarks are evaluated via cost-adjusted \texttt{mean\_net\_return} at intervention costs \texttt{0}, \texttt{0.25}, \texttt{0.5}, \texttt{1.0}, and \texttt{2.0}. Raw reward is also considered as an additional indicator, but the main question of this paper is about intervention efficiency.
+
+\subsection*{Protocol Details}
+
+One practical detail is worth stating plainly. The direct family is supervised on the intervention-value label itself. The factorized family is supervised on the harm and recoverability labels, then turns those predictions into a single decision score. The learned models use the fixed architecture listed above and a fixed epoch budget rather than early stopping.
+
+When threshold-based rules are used, thresholds are chosen on validation and transferred unchanged to test. The headline cost tables are reported on held-out test rows.
+
+\subsection*{Split and Leakage Note}
+
+Rows are split by \texttt{anchor\_id}, not by individual perturbation row. That means all candidate variants produced from the same anchor state stay in the same split. This avoids direct anchor leakage, and the dataset audit checks that no \texttt{anchor\_id} appears in more than one split. At the same time, nearby anchors from the same rollout can still end up in different splits, and checkpoints are not held out wholesale. So the main test here is generalization to unseen local intervention examples within seen tasks and seen teacher checkpoints, not a full task-held-out transfer test.
+
+\section{Results}
+
+\subsection*{Overall Cost-Adjusted Performance}
+
+The first result follows directly from the experiments. Once there is a nonzero intervention cost, \texttt{direct\_with\_delta\_q} becomes the best policy among the tested methods in the selected HLPE benchmark.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.18\linewidth}>{\raggedright\arraybackslash}p{0.28\linewidth}>{\raggedright\arraybackslash}p{0.18\linewidth}>{\raggedright\arraybackslash}p{0.18\linewidth}}
+\toprule
+Intervention cost & Best method & Intervention rate & Mean net return \\
+\midrule
+\texttt{0.00} & \texttt{always\_intervene} & \texttt{1.000000} & \texttt{67.683626} \\
+\texttt{0.25} & \texttt{direct\_with\_delta\_q} & \texttt{0.254545} & \texttt{67.587761} \\
+\texttt{0.50} & \texttt{direct\_with\_delta\_q} & \texttt{0.226705} & \texttt{67.526708} \\
+\texttt{1.00} & \texttt{direct\_with\_delta\_q} & \texttt{0.179545} & \texttt{67.425106} \\
+\texttt{2.00} & \texttt{direct\_with\_delta\_q} & \texttt{0.100000} & \texttt{67.299154} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.96\linewidth]{figures/cost_adjusted_evaluation.png}
+\caption{Cost-adjusted evaluation on the selected HLPE benchmark. The left panel shows the primary metric, \texttt{mean\_net\_return}, for the headline methods. The right panel shows the direct learned policy's margin over plain \texttt{delta\_q} at each intervention cost. \texttt{direct\_with\_delta\_q} is the strongest positive-cost policy.}
+\end{figure}
+
+In particular, at intervention cost \texttt{0}, \texttt{always\_intervene} becomes the upper bound, since interventions are costless and unnecessary interventions do not reduce performance. Even at zero intervention cost, the learned value model gets quite close to the upper bound: the mean net return of \texttt{always\_intervene} is \texttt{67.683626}, while the mean net return of \texttt{direct\_with\_delta\_q} is \texttt{67.683462}, less than \texttt{0.000164} away. While this does not mean that \texttt{direct\_with\_delta\_q} is the best zero-cost policy, it indicates that the learned value model captures the intervention signal very accurately. At each positive intervention cost, \texttt{direct\_with\_delta\_q} is the best among the discussed policies while being selective in its use of interventions. The intervention rate goes down from \texttt{0.254545} at cost \texttt{0.25} to \texttt{0.100000} at cost \texttt{2.0}.
+
+\subsection*{Direct Versus Factorized Learned Models}
+
+The next relevant result refers to the relative strengths of the two families of learned models. It should come as no surprise that the direct models perform better than their factorized counterparts. Although the factorized model may be useful because of the scientific insight it provides, namely the separation between the harm score and the recoverability score, the direct value-based target better matches the final decision problem. As a result, in the comparison discussed above, \texttt{direct\_with\_delta\_q} is clearly superior, and the factorized learned models are consistently worse.
+
+\subsection*{Intervention Selection Versus Intervention Score}
+
+The comparison between the strongest handcrafted intervention selector and the best learned value-based intervention model is the main result of the paper.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.18\linewidth}>{\raggedright\arraybackslash}p{0.20\linewidth}>{\raggedright\arraybackslash}p{0.20\linewidth}>{\raggedright\arraybackslash}p{0.16\linewidth}}
+\toprule
+Intervention cost & {\scriptsize\texttt{direct\_with\_delta\_q}} & \texttt{delta\_q} & Gap \\
+\midrule
+\texttt{0.25} & \texttt{67.587761} & \texttt{67.520356} & \texttt{+0.067405} \\
+\texttt{0.50} & \texttt{67.526708} & \texttt{67.445356} & \texttt{+0.081352} \\
+\texttt{1.00} & \texttt{67.425106} & \texttt{67.358677} & \texttt{+0.066428} \\
+\texttt{2.00} & \texttt{67.299154} & \texttt{67.254297} & \texttt{+0.044857} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{Reliability Note}
+
+The gap is small, so the natural reader question is whether it is just noise. The current manuscript can support a careful answer, but not an overly broad one. Across the four positive intervention costs reported above, the learned-minus-\texttt{delta\_q} gap never changes sign. It ranges from \texttt{+0.044857} to \texttt{+0.081352}, with a mean of \texttt{+0.065011}. The task-level comparison also does not flip sign on the held-out tasks that actually appear in the plot. That is enough for a narrow pattern claim. More specifically, the reported learned-model comparison comes from one training seed per model in the pipeline rather than a seed sweep, so the paper does not claim variance estimates across multiple learned-model seeds.
+
+While the numerical advantages of \texttt{direct\_with\_delta\_q} may appear small at first, the important pattern here is consistency. Even at small positive costs, the learned model selects interventions more selectively, leading to an increase in performance. This should not be too surprising, given the specifics of the benchmark, namely:
+
+\begin{itemize}
+\item each case is defined by a short local sequence,
+\item both branches continue with expert policy,
+\item the episode horizon is 20 steps long,
+\item most mistakes made can be recovered from.
+\end{itemize}
+
+These factors create a local decision problem rather than a global rescue problem. The local design of the environment therefore makes a small improvement in intervention selection manifest as a small absolute change in reward.
+
+\subsection*{\texttt{direct\_with\_delta\_q} Versus \texttt{delta\_q} Across Pieces}
+
+Finally, the last notable experimental result is the cross-piece comparison of the two strongest methods. While the advantage varies from one piece to another, the direction remains favorable to the learned direct model across the pieces represented in the headline benchmark.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.84\linewidth]{figures/task_level_robustness.png}
+\caption{Task-level robustness at moderate intervention cost. Positive bars indicate that the learned direct model beats the plain critic-gap trigger after intervention cost is applied.}
+\end{figure}
+
+\texttt{C Major Scale Two Hands} belongs to the benchmark definition, but it does not appear in the piece-level plot because under the anchor-level split used here, its sampled rows did not land in the held-out test split.
+
+\section{Discussion}
+
+The first discussion point is simple: the critic-gap baseline stays strong. Unmodified plain \texttt{delta\_q} remains the strongest handcrafted Method 1 feature, while the best learned model continues to use it as an input. The work should be interpreted as an effort to go beyond the critic gap, not as a call to abandon it. Critic gap is good enough for certain tasks. The benchmark confirms that it is good, but not sufficient.
+
+Secondly, framing the problem in terms of intervention instead of action scoring does matter. Local harmfulness and intervention value are two separate properties. An action could be locally harmful, yet recoverable enough that correction is not worthwhile once intervention cost is taken into account. The key distinction here is exactly what the paired-branch benchmark was meant to highlight. \texttt{harm\_5}, \texttt{recoverable\_20}, and \texttt{intervention\_value\_20} create a clear distinction between "bad action" and "worth correcting."
+
+The third point to discuss is model design. While the factorized approach was the right starting point because it corresponded well to the conceptual decomposition of the problem, the final results favor a single head that directly predicts the target intervention score. This is informative. It suggests that for this particular benchmark, a direct prediction of the final score is better than the assembly of a decomposed score using separate heads.
+
+Fourthly, benchmark design plays a key role in interpreting the results. As explained above, the selected mixture of HLPEs increases the number of distinct errors and makes their distribution closer to human-like errors without fully transforming them into actual human motor behavior. This benchmark still remains local and largely recoverable, so the improvements in performance cannot be considered revolutionary. The important result is not that the learned model improves performance by some huge margin. Rather, the important result is that in this intervention regime, the model uses the available interventions more efficiently than the best local handcrafted baseline.
+
+\section{Limitations}
+
+This paper does not use data from human novices. Human-Like Proxy Errors, although valuable in expanding the diversity of possible errors, are still generated inside RoboPianist as proxies for actual human mistakes. The paper therefore demonstrates a result concerning robot-generated human-like proxies, not a result concerning real human behavior during piano lessons.
+
+Expert continuation from both branches is also important for the current study because it allows isolating the local intervention decision and keeping the benchmark simple to interpret. On the other hand, it means that student behavior does not adapt to feedback during the episode. The current results therefore do not cover what happens when that adaptation occurs.
+
+As explained before, the benchmark is local, with the horizon set to 20 steps ahead. The focus on short-term interventions reduces the magnitude of expected improvements, since methods that optimize short-term correction efficiency may produce only modest numerical gains even if they solve the local task well.
+
+Lastly, benchmark coverage is relatively narrow. The benchmark is based on five expert checkpoints from three pieces. Three of those checkpoints come from the same piece, but are generated with different seeds. Although such a selection allows making a well-informed benchmark claim, it does not imply broader coverage.
+
+The listed limitations do not negate the contributions of this research. They limit its applicability scope to a specific RoboPianist benchmark.
+
+\section{Conclusion}
+
+In sum, the preliminary Delta-Q study gave a positive answer to the local harmfulness question and produced a strong local baseline, while this paper extends that result in a new direction:
+
+\begin{quote}
+Does local harmfulness alone make a good HLPE intervention strategy?
+\end{quote}
+
+As far as the selected HLPE benchmark is concerned, the answer is clearly no. Using only a single local critic-gap score as a full intervention rule in a cost-sensitive setting is suboptimal compared with a learned policy that predicts intervention value using \texttt{delta\_q} as a contextual feature. This improvement is relatively small because of how localized the benchmark is, but it remains consistently positive in the reported comparison.
+
+The most defensible conclusion is thus:
+
+\begin{quote}
+In this RoboPianist teacher-side intervention benchmark, \texttt{delta\_q} is a strong local harmfulness baseline, but a learned intervention model that incorporates \texttt{delta\_q} together with contextual features yields better cost-aware intervention decisions on the selected HLPE dataset.
+\end{quote}
+
+The next step, of course, is not to overreach by claiming too much about human intervention techniques. It is rather to broaden the HLPE benchmark itself by using richer proxy-error families, more task types, and contexts where continuation is not constrained to follow the expert.
+
+\section*{Code Availability}
+
+Code and experiment artifacts are available on GitHub: \href{https://github.com/EnYiHou/robopianist-cost-aware-intervention}{EnYiHou/robopianist-cost-aware-intervention}
+
+\begin{thebibliography}{9}
+
+\bibitem{haarnoja2018sac}
+Tuomas Haarnoja, Aurick Zhou, Pieter Abbeel, and Sergey Levine.
+\newblock Soft Actor-Critic: Off-Policy Maximum Entropy Deep Reinforcement Learning with a Stochastic Actor.
+\newblock In \emph{Proceedings of the 35th International Conference on Machine Learning}, 2018.
+
+\bibitem{zakka2023robopianist}
+Kevin Zakka, Philipp Wu, Laura Smith, Nimrod Gileadi, Taylor Howell, Xue Bin Peng, Sumeet Singh, Yuval Tassa, Pete Florence, Andy Zeng, and Pieter Abbeel.
+\newblock RoboPianist: Dexterous Piano Playing with Deep Reinforcement Learning.
+\newblock In \emph{Proceedings of the 7th Conference on Robot Learning}, 2023.
+
+\bibitem{reddy2018shared}
+Siddharth Reddy, Anca Dragan, and Sergey Levine.
+\newblock Shared Autonomy via Deep Reinforcement Learning.
+\newblock In \emph{Robotics: Science and Systems}, 2018.
+
+\bibitem{schaff2020residual}
+Charles Schaff and Matthew R. Walter.
+\newblock Residual Policy Learning for Shared Autonomy.
+\newblock arXiv preprint arXiv:2004.05055, 2020.
+
+\bibitem{singh2022ask4help}
+Kunal Pratap Singh, Luca Weihs, Alvaro Herrasti, Jonghyun Choi, Aniruddha Kembhavi, and Roozbeh Mottaghi.
+\newblock Ask4Help: Learning to Leverage an Expert for Embodied Tasks.
+\newblock arXiv preprint arXiv:2211.09960, 2022.
+
+\bibitem{ren2023robots}
+Allen Z. Ren, Anushri Dixit, Alexandra Bodrova, Sumeet Singh, Stephen Tu, Noah Brown, Peng Xu, Leila Takayama, Fei Xia, Jake Varley, Zhenjia Xu, Dorsa Sadigh, Andy Zeng, and Anirudha Majumdar.
+\newblock Robots that Ask for Help: Uncertainty Alignment for Large Language Model Planners.
+\newblock arXiv preprint arXiv:2307.01928, 2023.
+
+\end{thebibliography}
+
+\end{document}

@@ -13,10 +13,6 @@ results/
 results_backups/
 robopianist_rl_runs/
 
-report.pdf
-report.tex
 report.txt
 report_7pct_formatted_only.md
 report_7pct_rewritten.md
-
-figures/

@@ -84,6 +84,7 @@ def train_one_model(dataset_dir: Path, output_dir: Path, include_delta_q: bool, 
     rng = np.random.default_rng(seed)
     last_loss = 0.0
     for _ in range(epochs):
+        # A plain shuffled batch loop is enough here and keeps the training path easy to follow.
         for batch_indices in iterate_batches(len(x_train), batch_size, rng):
             x_batch = jnp.asarray(x_train[batch_indices], dtype=jnp.float32)
             y_batch = jnp.asarray(y_train[batch_indices], dtype=jnp.float32)

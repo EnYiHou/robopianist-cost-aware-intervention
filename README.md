@@ -10,7 +10,8 @@ The repo keeps one reproducible path only:
 
 ## Research paper
 
-- Paper: [report.md](./report.md)
+- Paper PDF: [report.pdf](./report.pdf)
+- Paper source: [report.tex](./report.tex)
 
 ## Repository layout
 
@@ -36,6 +37,14 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+The checkpoints are not tracked in Git. The pipeline expects these local files:
+
+- `robopianist_rl_runs/SAC-RoboPianist-debug-TwinkleTwinkleLittleStar-v0-42-1775611195.3773801/checkpoint_latest.pkl`
+- `robopianist_rl_runs/multi_seed-TwinkleTwinkleLittleStar-seed7-full500k/checkpoint_latest.pkl`
+- `robopianist_rl_runs/multi_seed-TwinkleTwinkleLittleStar-seed123-full500k/checkpoint_latest.pkl`
+- `robopianist_rl_runs/multi_task-TwinkleTwinkleRousseau-seed42-200kserial/checkpoint_latest.pkl`
+- `robopianist_rl_runs/multi_task-CMajorScaleTwoHands-seed42-200kserial/checkpoint_latest.pkl`
+
 ## How to run
 
 Run the full curated pipeline:
@@ -56,6 +65,12 @@ python run_curated_pipeline.py --output-root results/curated_pipeline --anchor-c
 2. `fit_model.py` trains `direct_no_delta_q` and `direct_with_delta_q`.
 3. `compare_methods.py` evaluates those models against `delta_q`, `action_l2_distance`, and `mistake_magnitude`.
 4. `run_curated_pipeline.py` writes the final markdown summary under `results/.../summary/summary.md`.
+
+If you want to rebuild the paper PDF after editing the LaTeX source:
+
+```bash
+tectonic report.tex
+```
 
 ## Outputs
 

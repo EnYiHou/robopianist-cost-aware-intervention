@@ -92,6 +92,8 @@ def build_feature_matrix(bundle: dict[str, Any], rows: pd.DataFrame | None = Non
         ],
         axis=1,
     ).astype(np.float32)
+    # The feature layout is kept explicit on purpose so it's easy to inspect
+    # what the model actually sees.
     spec = {
         "include_delta_q": bool(include_delta_q),
         "task_vocab": task_vocab,
