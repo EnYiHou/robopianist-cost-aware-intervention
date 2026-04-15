@@ -246,28 +246,6 @@ For example, consider a situation where an intervention increases 20-step return
 
 The factorized model was introduced first as a matching decomposition of the problem. However, the direct model better captures the actual decision quantity of interest, which made it the headline intervention method.
 
-\subsection*{Method Family as an Ablation Map}
-
-It also helps to say plainly what the method names are actually varying. The table below is meant as a map of the ablation family, not as a second winner table.
-
-\begin{table}[h]
-\centering
-\scriptsize
-\begin{tabular}{>{\raggedright\arraybackslash}p{0.22\linewidth}>{\raggedright\arraybackslash}p{0.12\linewidth}>{\raggedright\arraybackslash}p{0.22\linewidth}>{\raggedright\arraybackslash}p{0.30\linewidth}}
-\toprule
-Method & Uses \texttt{delta\_q}? & Score or target & What changes \\
-\midrule
-\texttt{delta\_q} & yes & local critic-gap score & strongest handcrafted local trigger \\
-action L2 & no & executed action difference & geometric action-distance trigger \\
-perturbation magnitude & no & requested scale & generation-time size signal \\
-factorized w/o dq & no & predicted harm + recoverability & learned context without critic gap \\
-factorized with dq & yes & predicted harm + recoverability & same decomposition with critic gap added \\
-direct w/o dq & no & predicted intervention value & direct target without critic gap \\
-direct with dq & yes & predicted intervention value & direct target with critic gap \\
-\bottomrule
-\end{tabular}
-\end{table}
-
 \section{Experimental Setup}
 
 \subsection*{Expert Checkpoints Used}
