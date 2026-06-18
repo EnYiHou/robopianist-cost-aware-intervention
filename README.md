@@ -1,5 +1,11 @@
 # RoboPianist Cost-Aware Intervention
 
+## Results
+
+- 14,464 Human-Like Proxy Error benchmark rows for cost-aware intervention analysis
+- Learned intervention models compared against budgeted and cost-aware selection baselines
+- End-to-end reproducible pipeline from curated dataset generation through model training and evaluation
+
 ## Research paper
 
 - Paper PDF: [report.pdf](./report.pdf)
