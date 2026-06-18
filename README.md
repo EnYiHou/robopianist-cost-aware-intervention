@@ -1,5 +1,9 @@
 # RoboPianist Cost-Aware Intervention
 
+Research pipeline for studying when teacher intervention is worth its cost in RoboPianist.
+
+![Cost-adjusted evaluation summary](./figures/cost_adjusted_evaluation.png)
+
 ## Results
 
 - 14,464 Human-Like Proxy Error benchmark rows for cost-aware intervention analysis
@@ -51,11 +55,9 @@ Run the pipeline:
 python run_curated_pipeline.py --output-root results/curated_pipeline --overwrite
 ```
 
-
 ## Pipeline steps
 
 1. `build_dataset.py` rebuilds the curated HLPE benchmark from the five final checkpoints.
 2. `fit_model.py` trains `direct_no_delta_q` and `direct_with_delta_q`.
 3. `compare_methods.py` evaluates those models against `delta_q`, `action_l2_distance`, and `mistake_magnitude`.
 4. `run_curated_pipeline.py` writes the final markdown summary under `results/.../summary/summary.md`.
-
